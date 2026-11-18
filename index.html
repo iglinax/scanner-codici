@@ -72,6 +72,7 @@ input{min-width:0;flex:1;background:#101820;border:1px solid var(--line);border-
     <div class="actions">
       <button id="copy">Copia lista</button>
       <button id="csv">Esporta CSV</button>
+      <button id="dedup">Rimuovi doppioni</button>
       <button class="danger" id="clear">Svuota lista</button>
     </div>
   </section>
@@ -214,6 +215,21 @@ input{min-width:0;flex:1;background:#101820;border:1px solid var(--line);border-
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a'); a.href = url; a.download = 'codici_barre.csv'; a.click();
     URL.revokeObjectURL(url); toast('CSV esportato');
+  });
+  document.getElementById('dedup').addEventListener('click', () => {
+    if (!entries.length) return toast('Lista vuota');
+    const visti = new Set();
+    const unici = entries.filter(item => {
+      if (visti.has(item.value)) return false;
+      visti.add(item.value);
+      return true;
+    });
+    const rimossi = entries.length - unici.length;
+    if (!rimossi) return toast('Nessun doppione');
+    entries.splice(0, entries.length, ...unici);
+    render();
+    setStatus('Rimossi ' + rimossi + (rimossi === 1 ? ' doppione.' : ' doppioni.'));
+    toast(rimossi === 1 ? 'Doppione rimosso' : rimossi + ' doppioni rimossi');
   });
   document.addEventListener('visibilitychange', () => { if (document.hidden && scanning) stopCamera(); });
 })();
