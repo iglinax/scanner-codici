@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#17212b">
+<title>Barcode Scanner</title>
+<style>
+:root{color-scheme:dark;--bg:#101820;--panel:#1b2835;--panel2:#243444;--text:#f3f6f8;--muted:#a9b7c4;--accent:#36c98f;--danger:#ff6b6b;--line:#344656}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:env(safe-area-inset-top) 14px env(safe-area-inset-bottom)}
+main{max-width:620px;margin:0 auto;padding:18px 0 28px}
+h1{font-size:25px;margin:0 0 4px;letter-spacing:-.5px}
+.sub{color:var(--muted);margin:0 0 18px;font-size:14px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px;margin-bottom:14px}
+.camera-wrap{position:relative;background:#05090d;border-radius:12px;overflow:hidden;aspect-ratio:4/3;display:grid;place-items:center}
+video{width:100%;height:100%;object-fit:cover;display:none}
+.placeholder{color:var(--muted);text-align:center;padding:20px;font-size:14px}
+.scanline{position:absolute;left:10%;right:10%;top:50%;height:2px;background:var(--accent);box-shadow:0 0 12px var(--accent);display:none;pointer-events:none}
+.actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:12px}
+button{border:0;border-radius:11px;padding:12px 15px;font:600 15px system-ui;cursor:pointer;background:var(--panel2);color:var(--text);flex:1;min-width:115px}
+button.primary{background:var(--accent);color:#062116}
+button.danger{background:#492a31;color:#ffd9dc}
+button:disabled{opacity:.45;cursor:not-allowed}
+.status{font-size:13px;color:var(--muted);margin-top:10px;min-height:19px}
+.rowhead{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.rowhead h2{font-size:18px;margin:0}
+.count{color:var(--accent);font-weight:700;font-variant-numeric:tabular-nums}
+.entry{display:flex;align-items:center;gap:10px;padding:12px 0;border-bottom:1px solid var(--line)}
+.entry:last-child{border-bottom:0}
+.num{color:var(--muted);font-size:12px;min-width:24px}
+.code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:16px;overflow-wrap:anywhere;flex:1}
+.kind{font-size:11px;color:var(--muted);margin-top:3px}
+.remove{flex:0 0 auto;min-width:38px;padding:8px;color:#ffb4b4}
+.empty{color:var(--muted);text-align:center;padding:22px 8px;font-size:14px}
+.manual{display:flex;gap:8px;margin-top:12px}
+input{min-width:0;flex:1;background:#101820;border:1px solid var(--line);border-radius:10px;padding:12px;color:var(--text);font:16px ui-monospace,monospace}
+.small{font-size:12px;color:var(--muted);line-height:1.45;margin:12px 2px 0}
+.toast{position:fixed;left:50%;bottom:calc(18px + env(safe-area-inset-bottom));transform:translateX(-50%);background:#eafbf3;color:#09291c;padding:10px 16px;border-radius:30px;font-weight:650;font-size:14px;opacity:0;pointer-events:none;transition:opacity .2s;white-space:nowrap}
+.toast.show{opacity:1}
+</style>
+</head>
+<body>
+<main>
+  <h1>Barcode Scanner</h1>
+  <p class="sub">Lettore di codici a barre 1D · Lista scansioni</p>
+
+  <section class="panel">
+    <div class="camera-wrap">
+      <video id="video" autoplay muted playsinline></video>
+      <div class="placeholder" id="placeholder">La fotocamera è spenta.<br>Premi «Avvia fotocamera» per iniziare.</div>
+      <div class="scanline" id="scanline"></div>
+    </div>
+    <div class="actions">
+      <button class="primary" id="start">Avvia fotocamera</button>
+      <button id="stop" disabled>Ferma</button>
+    </div>
+    <div class="status" id="status" aria-live="polite">Pronto per la scansione.</div>
+    <div class="small">Inquadra un codice alla volta. Dopo una lettura, lo stesso codice viene ignorato per qualche secondo per evitare doppioni accidentali.</div>
+  </section>
+
+  <section class="panel">
+    <div class="rowhead">
+      <h2>Codici acquisiti</h2>
+      <span class="count" id="count">0</span>
+    </div>
+    <div id="list"><div class="empty">Ancora nessun codice acquisito.</div></div>
+    <div class="manual">
+      <input id="manualInput" type="text" inputmode="text" autocomplete="off" placeholder="Inserisci un codice manualmente">
+      <button class="primary" id="addManual" style="flex:0 0 auto;min-width:74px">Aggiungi</button>
+    </div>
+    <div class="actions">
+      <button id="copy">Copia lista</button>
+      <button id="csv">Esporta CSV</button>
+      <button class="danger" id="clear">Svuota lista</button>
+    </div>
+  </section>
+  <p class="small">Le scansioni restano in questa pagina finché non la chiudi o la ricarichi. Non vengono inviate a nessun server.</p>
+</main>
+<div class="toast" id="toast">Copiato</div>
+
+<script>
+(() => {
+  const video = document.getElementById('video');
+  const placeholder = document.getElementById('placeholder');
+  const scanline = document.getElementById('scanline');
+  const statusEl = document.getElementById('status');
+  const listEl = document.getElementById('list');
+  const countEl = document.getElementById('count');
+  const startBtn = document.getElementById('start');
+  const stopBtn = document.getElementById('stop');
+  const entries = [];
+  const recent = new Map();
+  let stream = null, detector = null, scanning = false, frameHandle = null, lastScanAt = 0;
+
+  const setStatus = msg => statusEl.textContent = msg;
+  function toast(msg) {
+    const el = document.getElementById('toast');
+    el.textContent = msg; el.classList.add('show');
+    setTimeout(() => el.classList.remove('show'), 1500);
+  }
+  function addCode(raw, format='') {
+    const value = String(raw ?? '').trim();
+    if (!value) return;
+    const now = Date.now();
+    const previous = recent.get(value) || 0;
+    if (now - previous < 2500) return;
+    recent.set(value, now);
+    entries.unshift({value, format, time:new Date()});
+    render();
+    if (navigator.vibrate) navigator.vibrate(70);
+    setStatus('Letto: ' + value);
+  }
+  function render() {
+    countEl.textContent = entries.length;
+    listEl.replaceChildren();
+    if (!entries.length) {
+      const empty = document.createElement('div');
+      empty.className = 'empty'; empty.textContent = 'Ancora nessun codice acquisito.';
+      listEl.append(empty); return;
+    }
+    entries.forEach((item, index) => {
+      const row = document.createElement('div'); row.className = 'entry';
+      const n = document.createElement('span'); n.className = 'num'; n.textContent = String(entries.length-index)+'.';
+      const wrap = document.createElement('div'); wrap.style.flex = '1'; wrap.style.minWidth = '0';
+      const code = document.createElement('div'); code.className = 'code'; code.textContent = item.value;
+      const kind = document.createElement('div'); kind.className = 'kind'; kind.textContent = item.format || 'Codice inserito manualmente';
+      wrap.append(code, kind);
+      const del = document.createElement('button'); del.className = 'remove'; del.textContent = '×'; del.setAttribute('aria-label','Rimuovi codice');
+      del.addEventListener('click', () => { entries.splice(index,1); render(); });
+      row.append(n,wrap,del); listEl.append(row);
+    });
+  }
+  async function startCamera() {
+    if (!('BarcodeDetector' in window)) {
+      setStatus('Questo browser non supporta la lettura barcode integrata. Prova con Chrome aggiornato su Android.');
+      return;
+    }
+    try {
+      const supported = await BarcodeDetector.getSupportedFormats();
+      const wanted = ['ean_13','ean_8','upc_a','upc_e','code_128','code_39','code_93','itf','codabar'];
+      const formats = wanted.filter(f => supported.includes(f));
+      if (!formats.length) throw new Error('Il browser non espone formati barcode 1D supportati.');
+      detector = new BarcodeDetector({formats});
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio:false,
+        video:{facingMode:{ideal:'environment'}, width:{ideal:1280}, height:{ideal:720}}
+      });
+      video.srcObject = stream;
+      await video.play();
+      video.style.display = 'block'; placeholder.style.display = 'none'; scanline.style.display = 'block';
+      scanning = true; startBtn.disabled = true; stopBtn.disabled = false;
+      setStatus('Fotocamera attiva · Inquadra un codice a barre.');
+      scanLoop();
+    } catch (err) {
+      stopCamera();
+      const msg = err.name === 'NotAllowedError' ? 'Permesso fotocamera negato. Consenti l’accesso nelle impostazioni del browser.'
+        : err.name === 'NotFoundError' ? 'Nessuna fotocamera trovata.'
+        : (err.message || 'Impossibile avviare la fotocamera.');
+      setStatus(msg);
+    }
+  }
+  async function scanLoop() {
+    if (!scanning) return;
+    if (video.readyState >= 2 && Date.now()-lastScanAt > 180) {
+      lastScanAt = Date.now();
+      try {
+        const codes = await detector.detect(video);
+        if (codes.length) addCode(codes[0].rawValue, codes[0].format.toUpperCase());
+      } catch (_) {}
+    }
+    if (scanning) frameHandle = requestAnimationFrame(scanLoop);
+  }
+  function stopCamera() {
+    scanning = false;
+    if (frameHandle) cancelAnimationFrame(frameHandle);
+    if (stream) stream.getTracks().forEach(track => track.stop());
+    stream = null; video.srcObject = null; video.style.display = 'none';
+    placeholder.style.display = 'block'; scanline.style.display = 'none';
+    startBtn.disabled = false; stopBtn.disabled = true;
+    setStatus('Fotocamera spenta.');
+  }
+
+  startBtn.addEventListener('click', startCamera);
+  stopBtn.addEventListener('click', stopCamera);
+  document.getElementById('addManual').addEventListener('click', () => {
+    const input = document.getElementById('manualInput');
+    addCode(input.value, 'MANUALE'); input.value = ''; input.focus();
+  });
+  document.getElementById('manualInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('addManual').click();
+  });
+  document.getElementById('clear').addEventListener('click', () => {
+    if (!entries.length || confirm('Vuoi eliminare tutti i codici acquisiti?')) {
+      entries.length = 0; recent.clear(); render(); setStatus('Lista svuotata.');
+    }
+  });
+  document.getElementById('copy').addEventListener('click', async () => {
+    if (!entries.length) return toast('Lista vuota');
+    const text = entries.map(e => e.value).join('\n');
+    try { await navigator.clipboard.writeText(text); toast('Lista copiata'); }
+    catch (_) {
+      const area = document.createElement('textarea'); area.value = text;
+      document.body.append(area); area.select(); document.execCommand('copy'); area.remove(); toast('Lista copiata');
+    }
+  });
+  document.getElementById('csv').addEventListener('click', () => {
+    if (!entries.length) return toast('Lista vuota');
+    const quote = s => '"' + String(s).replace(/"/g,'""') + '"';
+    const csv = '\uFEFFCodice,Formato,Data\n' + entries.slice().reverse().map(e =>
+      [e.value,e.format,e.time.toLocaleString('it-IT')].map(quote).join(',')
+    ).join('\n');
+    const blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'codici_barre.csv'; a.click();
+    URL.revokeObjectURL(url); toast('CSV esportato');
+  });
+  document.addEventListener('visibilitychange', () => { if (document.hidden && scanning) stopCamera(); });
+})();
+</script>
+</body>
+</html>
